@@ -2874,8 +2874,7 @@ static int msm_mi2s_set_sclk(struct snd_pcm_substream *substream, bool enable)
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	int port_id = 0;
-	/* Rx and Tx DAIs should use same clk index */
-	int index = (cpu_dai->id) / 2;
+	int index = cpu_dai->id;
 
 	port_id = msm_get_port_id(rtd->dai_link->id);
 	if (port_id < 0) {
@@ -5109,7 +5108,7 @@ static int msm_snd_cdc_dma_startup(struct snd_pcm_substream *substream)
 static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 				u32 num_ch, u32 ch_mask)
 {
-	int i = 0, j = 0;
+	int i = 0;
 	int val = 0;
 	u8 dev_num = 0;
 	int ch_configured = 0;
@@ -5118,7 +5117,6 @@ static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 	struct snd_soc_dai_link *dai_link = rtd->dai_link;
         struct msm_asoc_mach_data *pdata =
 			snd_soc_card_get_drvdata(rtd->card);
-	struct lpass_swr_spkr_dep_cfg_t *spkr_dep_cfg_ptr;
 
 	if (!pdata) {
 		pr_err("%s: pdata is NULL\n", __func__);
@@ -5127,11 +5125,6 @@ static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 
 	if (!num_ch) {
 		pr_err("%s: channel count is 0\n", __func__);
-		return;
-	}
-
-	if (!ch_mask) {
-		pr_err("%s: channel mask is 0\n", __func__);
 		return;
 	}
 
@@ -5177,11 +5170,9 @@ static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 			return;
 		}
 
-		spkr_dep_cfg_ptr = &(pdata->cps_config.spkr_dep_cfg[i]);
-
 		/* Clear stale dev num info */
-		spkr_dep_cfg_ptr->vbatt_pkd_reg_addr &= 0xFFFF;
-		spkr_dep_cfg_ptr->temp_pkd_reg_addr &= 0xFFFF;
+		pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr &= 0xFFFF;
+		pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr &= 0xFFFF;
 
 		val = 0;
 
@@ -5195,22 +5186,11 @@ static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 		val |= (i*2) << 16;
 
 		/* Update dev num in packed reg addr */
-		spkr_dep_cfg_ptr->vbatt_pkd_reg_addr |= val;
+		pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr |= val;
 
 		val &= 0xFF0FFFF;
 		val |= ((i*2)+1) << 16;
-		spkr_dep_cfg_ptr->temp_pkd_reg_addr |= val;
-
-		/* Retain dev_num from val */
-		val &= 0x00F00000;
-		for (j = 0; j < MAX_CPS_LEVELS; j++)
-		{
-			val &= 0xFFF0FFFF;
-			val |= ((i * 3) + j) << 16;
-			spkr_dep_cfg_ptr->value_normal_thrsd[j] |= val;
-			spkr_dep_cfg_ptr->value_low1_thrsd[j] |= val;
-			spkr_dep_cfg_ptr->value_low2_thrsd[j] |= val;
-		}
+		pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr |= val;
 		i++;
 		ch_configured++;
 	}
@@ -5338,8 +5318,7 @@ void mi2s_disable_audio_vote(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
-	/* Rx and Tx DAIs should use same clk index */
-	int index = (cpu_dai->id) / 2;
+	int index = cpu_dai->id;
 	struct snd_soc_card *card = rtd->card;
 	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
 	int sample_rate = 0;
@@ -5375,11 +5354,15 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 	int ret = 0;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
-	/* Rx and Tx DAIs should use same clk index */
-	int index = (cpu_dai->id) / 2;
+	int index = cpu_dai->id;
 	unsigned int fmt = SND_SOC_DAIFMT_CBS_CFS;
 	struct snd_soc_card *card = rtd->card;
 	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+#ifndef ENABLE_WSA
+	struct snd_soc_component *component = NULL;
+	struct snd_soc_dai **codec_dais = rtd->codec_dais;
+	int i;
+#endif
 	int sample_rate = 0;
 	u32 bit_per_sample = 0;
 
@@ -5435,6 +5418,12 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 			mi2s_intf_conf[index].audio_core_vote = true;
 		}
 
+		/* Check if msm needs to provide the clock to the interface */
+		if (!mi2s_intf_conf[index].msm_is_mi2s_master) {
+			mi2s_clk[index].clk_id = mi2s_ebit_clk[index];
+			fmt = SND_SOC_DAIFMT_CBM_CFM;
+		}
+
 		mi2s_clk[index].clk_freq_in_hz = (sample_rate *
 					MI2S_NUM_CHANNELS * bit_per_sample);
 		dev_dbg(rtd->card->dev, "%s: clock rate %ul\n", __func__,
@@ -5448,6 +5437,12 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 			goto clean_up;
 		}
 
+		ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
+		if (ret < 0) {
+			pr_err("%s: set fmt cpu dai failed for MI2S (%d), err:%d\n",
+				__func__, index, ret);
+			goto clk_off;
+		}
 		if (pdata->mi2s_gpio_p[index]) {
 			if (atomic_read(&(pdata->mi2s_gpio_ref_count[index]))
 									== 0) {
@@ -5461,19 +5456,18 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 			}
 			atomic_inc(&(pdata->mi2s_gpio_ref_count[index]));
 		}
+#ifndef ENABLE_WSA
+		for (i = 0; i < rtd->num_codecs; i++) {
+			component = codec_dais[i]->component;
+			snd_soc_dai_set_fmt(codec_dais[i],
+					SND_SOC_DAIFMT_CBS_CFS |
+					SND_SOC_DAIFMT_I2S);
+			snd_soc_component_set_sysclk(component, 0, 0,
+					mi2s_clk[index].clk_freq_in_hz,
+					SND_SOC_CLOCK_IN);
+		}
+#endif
 	}
-	/* Check if msm needs to provide the clock to the interface */
-	if (!mi2s_intf_conf[index].msm_is_mi2s_master) {
-		mi2s_clk[index].clk_id = mi2s_ebit_clk[index];
-		fmt = SND_SOC_DAIFMT_CBM_CFM;
-	}
-	ret = snd_soc_dai_set_fmt(cpu_dai, fmt);
-	if (ret < 0) {
-		pr_err("%s: set fmt cpu dai failed for MI2S (%d), err:%d\n",
-			__func__, index, ret);
-		goto clk_off;
-	}
-
 clk_off:
 	if (ret < 0)
 		msm_mi2s_set_sclk(substream, false);
@@ -5492,8 +5486,7 @@ static void msm_mi2s_snd_shutdown(struct snd_pcm_substream *substream)
 {
 	int ret = 0;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	/* Rx and Tx DAIs should use same clk index */
-	int index = (rtd->cpu_dai->id) / 2;
+	int index = rtd->cpu_dai->id;
 	struct snd_soc_card *card = rtd->card;
 	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
 
@@ -5788,7 +5781,7 @@ static void *def_wcd_mbhc_cal(void)
 		(sizeof(btn_cfg->_v_btn_low[0]) * btn_cfg->num_btn);
 
 	btn_high[0] = 75;
-	btn_high[1] = 150;
+	btn_high[1] = 137;
 	btn_high[2] = 237;
 	btn_high[3] = 500;
 	btn_high[4] = 500;
@@ -6397,31 +6390,6 @@ static struct snd_soc_dai_link msm_common_misc_fe_dai_links[] = {
 		.id = MSM_FRONTEND_DAI_MULTIMEDIA10,
 		SND_SOC_DAILINK_REG(multimedia10),
 	},
-	{/* hw:x,44 */
-		.name = "Secondary MI2S_TX Hostless",
-		.stream_name = "Secondary MI2S_TX Hostless Capture",
-		.dynamic = 1,
-		.dpcm_capture = 1,
-		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
-			SND_SOC_DPCM_TRIGGER_POST},
-		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
-		.ignore_suspend = 1,
-		.ignore_pmdown_time = 1,
-		SND_SOC_DAILINK_REG(sec_mi2s_tx_hostless),
-	},
-	/* DISP PORT Hostless */
-	{/* hw:x,45 */
-		.name = "DISPLAY_PORT_RX_HOSTLESS",
-		.stream_name = "DISPLAY_PORT_RX_HOSTLESS",
-		.dynamic = 1,
-		.dpcm_playback = 1,
-		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
-			SND_SOC_DPCM_TRIGGER_POST},
-		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
-		.ignore_suspend = 1,
-		.ignore_pmdown_time = 1,
-		SND_SOC_DAILINK_REG(display_port_hostless),
-	},
 };
 
 static struct snd_soc_dai_link msm_common_be_dai_links[] = {
@@ -6775,6 +6743,38 @@ static struct snd_soc_dai_link ext_disp_be_dai_link[] = {
 };
 #endif
 
+#ifndef ENABLE_WSA
+static int cs35l41_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_dai **codec_dais = rtd->codec_dais;
+	struct snd_soc_dapm_context *dapm;
+	int i;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		dapm = snd_soc_component_get_dapm(codec_dais[i]->component);
+		if (dapm->component->name_prefix == NULL) {
+			pr_debug("%s: name_prefix=NULL\n", __func__);
+			snd_soc_dapm_ignore_suspend(dapm, "AMP Playback");
+			snd_soc_dapm_ignore_suspend(dapm, "AMP Capture");
+			snd_soc_dapm_ignore_suspend(dapm, "SPK");
+		} else if (!strcmp(dapm->component->name_prefix, "L")) {
+			pr_debug("%s: name_prefix=L\n", __func__);
+			snd_soc_dapm_ignore_suspend(dapm, "L AMP Playback");
+			snd_soc_dapm_ignore_suspend(dapm, "L AMP Capture");
+			snd_soc_dapm_ignore_suspend(dapm, "L SPK");
+		} else if (!strcmp(dapm->component->name_prefix, "R")) {
+			pr_debug("%s: name_prefix=R\n", __func__);
+			snd_soc_dapm_ignore_suspend(dapm, "R AMP Playback");
+			snd_soc_dapm_ignore_suspend(dapm, "R AMP Capture");
+			snd_soc_dapm_ignore_suspend(dapm, "R SPK");
+		}
+	}
+	snd_soc_dapm_sync(dapm);
+
+	return 0;
+}
+#endif
+
 static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 	{
 		.name = LPASS_BE_PRI_MI2S_RX,
@@ -6902,6 +6902,9 @@ static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 		.ignore_suspend = 1,
 		.ignore_pmdown_time = 1,
 		SND_SOC_DAILINK_REG(sen_mi2s_rx),
+#ifndef ENABLE_WSA
+		.init = &cs35l41_init,
+#endif
 	},
 	{
 		.name = LPASS_BE_SENARY_MI2S_TX,
@@ -8230,6 +8233,13 @@ static void parse_cps_configuration(struct platform_device *pdev,
 	}
 }
 
+#ifndef ENABLE_WSA
+static struct snd_soc_codec_conf msm_codec_conf[] = {
+	{ "cs35l41.3-0040", NULL, "L" },
+	{ "cs35l41.3-0041", NULL, "R" },
+};
+#endif
+
 static int msm_asoc_machine_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = NULL;
@@ -8297,6 +8307,11 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
                          __func__, pdev->dev.of_node->full_name, ret);
                 pdata->wsa_max_devs = 0;
         }
+
+#ifndef ENABLE_WSA
+	card->codec_conf = msm_codec_conf;
+	card->num_configs = sizeof(msm_codec_conf) / sizeof(msm_codec_conf[0]);
+#endif
 
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret == -EPROBE_DEFER) {
